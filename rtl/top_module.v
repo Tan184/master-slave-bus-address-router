@@ -22,7 +22,7 @@ module slave(
       if (wr_dir) begin //Write
         // Write happens immediately when wr_dir is 1, regardless of enable
         memory[addr] <= wdata;
-      end else if (wr_dir == 0 && enable) begin //Read
+      end else if (wr_dir == 0 /*&& enable*/) begin //Read
         // Read only happens when enable is 1 (second cycle)
         rdata <= memory[addr];
       end
