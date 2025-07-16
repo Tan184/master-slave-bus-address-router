@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-//Try adding assertions later to make debugging easier
+//test gen.count == drv.count
 
 interface nic_int(input logic clk);
   logic rst;
@@ -55,7 +55,7 @@ endclass
 
 
 class generator;
-  int num = 4;
+  int num = 3;
   int count = 0;
   mailbox gen2drv;
   event ended;
@@ -71,17 +71,19 @@ class generator;
       
       t = new();
       void'(t.randomize());  //With constrained address
-      
+//            count++; 
+
       if ((i % 2) == 0) begin //To make sure both write and read operations are conducted
         t.wr_dir = 1;  //Write first
       end else begin
         t.wr_dir = 0; //Read next
+        t.wdata = 0;
       end
       i++;
     
       t.display("GEN");
       gen2drv.put(t);
-      count++;
+      count++; 
     end
     -> ended;
   endtask
@@ -130,13 +132,15 @@ class driver;
     t.display("DRV");
     
 	#1; //To let values settle
+    //@(vif.driver_cb);
     // Reset signals after both write and read operations
     vif.driver_cb.master_sel    <= 0;
     vif.driver_cb.master_enable <= 0;
     vif.driver_cb.master_wr_dir <= 0;
     vif.driver_cb.master_addr   <= 0;
-    vif.driver_cb.master_wdata  <= 0;
-    @(vif.driver_cb);
+    //vif.driver_cb.master_wdata  <= 0;
+    
+    //count++;
   endtask
 endclass
 
@@ -160,51 +164,64 @@ class monitor;
       t.wdata  = vif.monitor_cb.master_wdata;
       wait(vif.monitor_cb.master_enable);
       if (!t.wr_dir) begin
+        // Wait for enable to go low (if needed)
+        @(negedge vif.monitor_cb.master_enable);
+        /*#1;*/ @(vif.monitor_cb);
         @(vif.monitor_cb);
         t.rdata = vif.monitor_cb.master_rdata;
       end
+
       t.display("MON");
       mon2scr.put(t);
+
     end
   endtask
 endclass
 
 class scoreboard;
+  // Mailbox from monitor to scoreboard
   mailbox mon2scr;
   int num_transactions;
-  bit [15:0] ref_mem [bit[15:0]];
+  bit [15:0] ref_mem [bit[15:0]]; // Reference memory for verification
 
+  // Constructor
   function new(mailbox mon2scr);
     this.mon2scr = mon2scr;
+    num_transactions = 0;
   endfunction
 
+  // Main scoreboard logic
   task run();
     forever begin
       txn t;
       mon2scr.get(t);
 
       if (t.wr_dir) begin
+        // On write: update reference memory
         ref_mem[t.addr] = t.wdata;
         $display("T=%0t [SCR] WRITE: addr=0x%0h, data=0x%0h", $time, t.addr, t.wdata);
       end else begin
-        bit[15:0] expected_data;
-        if(ref_mem.exists(t.addr)) begin //There should actually be something in there. Will give error/tell if not.
+       
+        bit [15:0] expected_data;
+        if (ref_mem.exists(t.addr)) begin
           expected_data = ref_mem[t.addr];
         end else begin
           expected_data = 16'h0000;
         end
-
-        if(t.rdata == expected_data) begin
-          $display("T=%0t [SCR] READ PASS: addr=0x%0h, expected=0x%0h, got=0x%0h", $time, t.addr, expected_data, t.rdata);
+        
+        if (t.rdata == expected_data) begin
+          $display("T=%0t [SCR] READ PASS: addr=0x%0h, expected=0x%0h, got=0x%0h", 
+                    $time, t.addr, expected_data, t.rdata);
         end else begin
-          $display("T=%0t [SCR] READ FAIL: addr=0x%0h, expected=0x%0h, got=0x%0h", $time, t.addr, expected_data, t.rdata);
+          $display("T=%0t [SCR] READ FAIL: addr=0x%0h, expected=0x%0h, got=0x%0h", 
+                    $time, t.addr, expected_data, t.rdata);
         end
       end
-      
       num_transactions++;
     end
   endtask
 endclass
+
 
 class environment;
   generator gen;
@@ -219,8 +236,8 @@ class environment;
 
   function new(virtual nic_int vif);
     this.vif = vif;
-    gen2drv = new();
-    mon2scr = new();
+    gen2drv = new(1);
+    mon2scr = new(1);
     gen = new(gen2drv);
     drv = new(vif, gen2drv);
     mon = new(vif, mon2scr);
@@ -242,14 +259,16 @@ class environment;
 
   task post_test();
     wait(gen.ended.triggered); //To make sure all txns have been generated
-    wait(gen.count == scr.num_transactions); //To make sure all txnx have passed through the system
+    wait(gen.num /*count*/ == scr.num_transactions); //To make sure all txnx have passed through the system
+    $display("DEBUG: gen.num=%0d scr.num_transactions=%0d",gen.num, scr.num_transactions);
     $display("T=%0t [ENV] Test Completed", $time);
-  endtask
+  endtask 
 
   task run();
     reset();
     test();
     post_test();
+    //repeat (1) @(posedge vif.clk);
     $finish;
   endtask
 endclass
